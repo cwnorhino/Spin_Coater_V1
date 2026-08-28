@@ -1,2 +1,1 @@
-# Spin_Coater_V1
-V1 model of spin coater for the use of wafer fabrication
+Spin coating is a common technique for applying thin films to substrates. When a solution of a material and a solvent is spun at high speeds using a spin coater, the centripetal force and the surface tension of the liquid together create an even covering. After any remaining solvent has evaporated, spin coating results in a thin film ranging from a few nanometres to a few microns in thickness.
