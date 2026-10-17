@@ -20,3 +20,8 @@ _autosave-*
 *.pos
 *.gko
 *.gm1
+# PlatformIO (firmware/)
+**/.pio/
+**/.pioenvs/
+**/.piolibdeps/
+firmware/.pio/
