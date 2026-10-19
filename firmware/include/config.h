@@ -1,5 +1,9 @@
 #pragma once
+#ifdef ARDUINO
 #include <Arduino.h>
+#else
+#include <stdint.h>   // native unit tests
+#endif
 
 // ===================== SpinCoater Config =====================
 // ESP32 DevKit (CP2102) pin map — all safe (no strapping pins)
@@ -18,19 +22,37 @@
 static const uint8_t KEY_ROW_PINS[KEY_ROWS] = {14, 27, 26, 25};
 static const uint8_t KEY_COL_PINS[KEY_COLS] = {33, 32, 18, 19};
 
-// Future / optional (wire later, code already supports)
-#define TACH_PIN       34   // IR/Hall tachometer: 1 pulse per rev, INPUT_PULLUP, interrupt
-#define ESTOP_PIN      35   // Normally-open button to GND, INPUT_PULLUP (optional)
+// Optional inputs. GPIO34-39 are input-only and have NO internal pull-up or
+// pull-down, so each of these needs an external pull-up (10k to 3V3).
+// A floating GPIO34/35 reads LOW/noisy: spurious E-stops and tach counts.
+#define USE_ESTOP_PIN  1    // 1 = hardware E-stop wired on ESTOP_PIN
+#define USE_TACHO      0    // 1 = tachometer wired on TACH_PIN (enables RPM trips)
+
+#define TACH_PIN       34   // IR/Hall tachometer, falling edge per pulse
+#define ESTOP_PIN      35   // E-stop input
+// Level that means "STOP". NO button to GND + pull-up -> LOW.
+// Fail-safe option: NC button to GND + pull-up -> HIGH (broken wire = stop).
+#define ESTOP_ACTIVE_LEVEL LOW
 #define ISENSE_PIN     36   // Analog current sensor (ACS712/INA analog out), optional
 #define BUZZER_PIN     23   // Active buzzer via NPN or passive via LEDC (optional)
 
+// Tachometer
+#define TACH_PULSES_PER_REV 1
+#define TACH_MAX_RPM        25000   // pulses faster than this are rejected as noise
+#define TACH_MIN_PERIOD_US  (60000000UL / ((uint32_t)TACH_MAX_RPM * TACH_PULSES_PER_REV))
+#define TACH_TIMEOUT_US     500000UL // no pulse for 0.5 s -> 0 RPM
+
 // ESC pulse widths (microseconds, standard servo)
+// Uncalibrated SimonK: stop <= 1060us, full throttle >= 1860us. Calibrate the
+// ESC to 1000-2000us so ESC_SAFE_US really leaves headroom (1850 = ~85%).
 #define ESC_MIN_US     1000
 #define ESC_MAX_US     2000
 #define ESC_SPIN_US    1090  // below this most A2212 won't spin — deadband top
-#define ESC_SAFE_US    1850  // never exceed this (keeps headroom below 2000)
+#define ESC_SAFE_US    1850  // never exceed this
 #define ESC_ARM_US     1000
 #define ESC_ARM_TIME_MS 3000
+#define ESC_PWM_HZ     50
+#define ESC_TIMER_BITS 16    // LEDC resolution; library default 10 bits = 19.5us steps
 
 // Motor model: A2212 1400KV on 12V
 #define MOTOR_KV       1400.0f
@@ -42,6 +64,8 @@ static inline float rpmAtFullThrottle() { return MOTOR_KV * SUPPLY_V * MOTOR_EFF
 #define RPM_MIN           300
 #define RPM_SAFE_MAX      8000    // default cap: safe for 3D-printed chuck
 #define RPM_ABSOLUTE_MAX 10000    // firmware will NEVER command above this
+#define OVERSPEED_MARGIN_RPM 500  // tach: measured > cap + margin for 1 s -> fault
+#define TACHO_LOST_MIN_CMD_RPM 1500
 #define EST_CURRENT_TRIP_A 18.0f  // software estimated-current trip (30A ESC, 15A SMPS)
 #define RAMP_MIN_S        1
 #define RAMP_MAX_S        300
