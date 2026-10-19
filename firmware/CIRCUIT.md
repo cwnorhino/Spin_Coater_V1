@@ -33,9 +33,9 @@ High current world with thick wires, and logic world on breadboard with thin wir
 
 11. Keypad membrane 8 pins. Four are rows, four are columns. Hold it with pins up, usually left 4 are rows, right 4 are cols, but verify with continuity beep mode, press a key and see which row touches which col. Then wire rows to GPIO14, 27, 26, 25 in order, cols to GPIO33, 32, 18, 19 in order. The firmware uses internal pullups so no resistors needed. Keep these as short Dupont jumpers.
 
-12. Future tachometer for real feedback, add now if you have the sensor. IR reflective or fork sensor module. VCC to ESP32 3V3, GND to GND rail, OUT to GPIO34. Add a 10k resistor from OUT to 3V3 if readings are noisy. Mount it so the chuck interrupts it once per rev. Code already listens on GPIO34.
+12. Future tachometer for real feedback, add now if you have the sensor. IR reflective or fork sensor module. VCC to ESP32 3V3, GND to GND rail, OUT to GPIO34, plus a REQUIRED 10k resistor from OUT to 3V3 (GPIO34 has no internal pull-up; without it the pin floats and reads garbage). Mount it so the chuck interrupts it once per rev. Then set USE_TACHO 1 in firmware/include/config.h and re-flash (tach trips stay dormant at the default 0). This matches R1 on the schematic.
 
-13. Optional E-stop button. Normally open push button, one leg to GPIO35, other leg to GND. Pin is input pullup, pressing pulls it low and firmware cuts to 1000us. Mount it where your hand can slap it.
+13. Optional E-stop button. Normally open push button, one leg to GPIO35, other leg to GND, plus a REQUIRED 10k resistor from GPIO35 to 3V3 (GPIO35 has no internal pull-up; without it the pin floats LOW and the board boots straight into E-STOP). Pin reads LOW when pressed and firmware latches a fault + cuts to 1000us (motor coasts). Mount it where your hand can slap it. If no button is fitted, set USE_ESTOP_PIN 0 in firmware/include/config.h or the device boots faulted. This matches R2/SW1 on the schematic.
 
 14. Optional buzzer on GPIO23 through an NPN transistor, like 2N2222, with a 1k base resistor. Do not drive a buzzer directly from the pin if it is a big active one.
 
@@ -51,7 +51,7 @@ With everything wired but SMPS unplugged, beep out with multimeter: no short bet
 
 Then unplug ESC signal wire, power SMPS alone, verify 12V at ESC input and 5.0V at ESP32 VIN. Power off.
 
-Reconnect signal, keep motor with no chuck load, power on. ESP32 boots, OLED shows SPIN COATER menu, ESC beeps its arm tones after 3 seconds at 1000us. Only then press hash to run.
+Reconnect signal, keep motor with no chuck load, power on. ESP32 boots, OLED shows SPIN COATER menu, ESC beeps its arm tones after 3 seconds at 1000us. Only then press # to run (D edits the profile when idle, stops a run, or clears a fault; * is E-STOP).
 
 First spin at 2000 RPM max, no sample, hand on E-stop, check direction and vibration. Then go up slowly.
 
