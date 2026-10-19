@@ -1,0 +1,4 @@
+(sym_lib_table
+	(version 7)
+	(lib (name "spincoater")(type "KiCad")(uri "${KIPRJMOD}/spincoater.kicad_sym")(options "")(descr "Spin coater project symbols (ESP32 DevKit V1, ESC, buck, OLED, keypad, tach, motor)"))
+)
