@@ -61,7 +61,7 @@ static const uint8_t KEY_COL_PINS[KEY_COLS] = {33, 32, 18, 19};
 static inline float rpmAtFullThrottle() { return MOTOR_KV * SUPPLY_V * MOTOR_EFF; } // ~12096
 
 // Safety limits (software interlocks — independent of UI)
-#define RPM_MIN           300
+#define RPM_MIN           1000
 #define RPM_SAFE_MAX      8000    // default cap: safe for 3D-printed chuck
 #define RPM_ABSOLUTE_MAX 10000    // firmware will NEVER command above this
 #define OVERSPEED_MARGIN_RPM 500  // tach: measured > cap + margin for 1 s -> fault
