@@ -24,4 +24,4 @@ _autosave-*
 **/.pio/
 **/.pioenvs/
 **/.piolibdeps/
-firmware/.pio/
+firmware/.pio/".commandcode"  
