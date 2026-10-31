@@ -54,6 +54,23 @@ Edit menu (Target RPM → Ramp up → Hold → Ramp down → Ease):
 
 The profile is saved to flash (NVS) when the menu is confirmed and restored at boot.
 
+## ESC programming (EMAX SimonK 30A — do once)
+
+Motor connected (beeps come from its coils) but **no chuck**, hold it down.
+Menu `7 ESC SETUP`: `A` holds HIGH (2000µs), `B` holds LOW (1000µs), `D` exits.
+
+| Setting | Manual § | Use |
+|---|---|---|
+| Throttle learn | C2 | `A` → power SMPS → 2 beeps → `B` within 2 s (maps our 1000–2000µs exactly) |
+| Low-voltage prot | D6 | **OFF** (regulated SMPS, not a pack — stock Soft-Cut throttles to 31% on spikes) |
+| Start Force | D3 | 1.00–1.25 (chuck load; stock 0.75) |
+| Timing | D2 | Mid-high 23° (high-KV outrunner; stock 15°) |
+| Control Freq | D5 | try 22kHz (smoother; stock 8kHz) |
+| Curve / Brake | D4/D1 | OFF / OFF (we linearize; safety assumes coast) |
+
+Program mode: hold HIGH through power-on + 2 s past the 2 beeps until ♪123,
+then follow beep counts in the EMAX manual.
+
 ## Serial telemetry
 
 During a run, 115200 baud CSV at 10 Hz: `t_ms,cmd_rpm,esc_us,tach_rpm`

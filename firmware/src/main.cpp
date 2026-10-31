@@ -47,7 +47,7 @@ static bool spinActive = false;
 static uint32_t spinStartMs = 0;
 static bool redrawNow = true;
 
-enum AppMode : uint8_t { APP_MENU, APP_RUN_SETUP, APP_RUNNING, APP_CAL_RPM, APP_CAL_FB, APP_TUNE };
+enum AppMode : uint8_t { APP_MENU, APP_RUN_SETUP, APP_RUNNING, APP_CAL_RPM, APP_CAL_FB, APP_TUNE, APP_ESC };
 static AppMode appMode = APP_MENU;
 static uint8_t menuIdx = 2;       // default on RUN
 
@@ -265,12 +265,15 @@ static void drawMenu() {
   display.setTextSize(1);
   display.setCursor(0, 0);
   display.printf("SPIN COATER %s\n", FW_VERSION);
-  static const char* rows[6] = {"1 CAL RPM MAP", "2 CAL FEEDBACK", "3 RUN SPIN", "4 KEY TEST", "5 UPDATE FW", "6 AUTO 3000"};
-  for (uint8_t i = 0; i < 6; i++) {
-    if (i == menuIdx) display.print(">"); else display.print(" ");
-    display.print(rows[i]);
-    if (i == 0) display.print(rpmCal.valid ? " [OK]" : " [--]");
-    if (i == 1) display.print(fbCal.hasMin ? " [OK]" : " [--]");
+  static const char* rows[7] = {"1 CAL RPM MAP", "2 CAL FEEDBACK", "3 RUN SPIN", "4 KEY TEST", "5 UPDATE FW", "6 AUTO 3000", "7 ESC SETUP"};
+  uint8_t top = menuIdx >= 4 ? menuIdx - 4 : 0;  // 5-row scroll window
+  if (top > 2) top = 2;
+  for (uint8_t i = 0; i < 5; i++) {
+    uint8_t r = top + i;
+    if (r == menuIdx) display.print(">"); else display.print(" ");
+    display.print(rows[r]);
+    if (r == 0) display.print(rpmCal.valid ? " [OK]" : " [--]");
+    if (r == 1) display.print(fbCal.hasMin ? " [OK]" : " [--]");
     display.println();
   }
   display.println("A/B:move C:ok *:STOP");
@@ -683,6 +686,42 @@ static void autoTune3000() {
   appMode = APP_MENU; redrawNow = true;
 }
 
+// ---- ESC SETUP: holds HIGH/LOW throttle so the EMAX beep menus can be
+// walked from the keypad (throttle-learn C2 + D2/D3/D5/D6 programming).
+// MOTOR CONNECTED (beeps come from its coils) but NO CHUCK, hold it down,
+// clear area: HIGH means full throttle. D exits (cuts to 1000us).
+// C2 throttle-learn: A(HIGH) -> power SMPS -> 2 beeps -> B(LOW) in 2s.
+static void escSetup() {
+  appMode = APP_ESC;
+  int out = ESC_MIN_US;
+  esc.writeMicroseconds(out);
+  bool redraw = true;
+  while (true) {
+    if (redraw) {
+      display.clearDisplay(); display.setCursor(0, 0);
+      display.println("ESC SETUP no chuck!");
+      display.println("A:HI B:LO D:exit");
+      display.printf("OUT:%dus\n", out);
+      display.println("HI@power=learn");
+      display.display();
+      redraw = false;
+    }
+    if (estopPinActive()) safety.pressEstop();
+    if (safety.hasFault()) {
+      esc.writeMicroseconds(ESC_MIN_US);
+      appMode = APP_MENU; redrawNow = true; return;
+    }
+    char k = keys.getKey();
+    if (k == NO_KEY) { delay(10); continue; }
+    if (k == KEY_BACK) break;
+    if (k == KEY_UP) { out = ESC_MAX_US; esc.writeMicroseconds(out); Serial.println("esc-setup: HIGH 2000us"); }
+    else if (k == KEY_DOWN) { out = ESC_MIN_US; esc.writeMicroseconds(out); Serial.println("esc-setup: LOW 1000us"); }
+    redraw = true;
+  }
+  esc.writeMicroseconds(ESC_MIN_US);
+  appMode = APP_MENU; redrawNow = true;
+}
+
 // ---- Cal 1: ~60s dense us->rpm sweep (12 pts, chuck only, top ~6000rpm) ----
 static void calRpmSweep() {
   appMode = APP_CAL_RPM;
@@ -908,9 +947,9 @@ void loop() {
         // (D alone is not enough if that key itself is dead).
         if (k == KEY_BACK || k == KEY_OK || k == KEY_RUN) tryClearFault();
       } else {
-        if (k == KEY_UP || k == '2') menuIdx = (menuIdx + 5) % 6;
-        else if (k == KEY_DOWN || k == '8') menuIdx = (menuIdx + 1) % 6;
-        else if (k >= '1' && k <= '6') menuIdx = k - '1';
+        if (k == KEY_UP || k == '2') menuIdx = (menuIdx + 6) % 7;
+        else if (k == KEY_DOWN || k == '8') menuIdx = (menuIdx + 1) % 7;
+        else if (k >= '1' && k <= '7') menuIdx = k - '1';
         else if (k == KEY_OK || k == KEY_RUN) {
           if (menuIdx == 0) calRpmSweep();
           else if (menuIdx == 1) calFeedback();
@@ -921,7 +960,8 @@ void loop() {
           }
           else if (menuIdx == 3) keyTest();
           else if (menuIdx == 4) updateFw();
-          else autoTune3000();
+          else if (menuIdx == 5) autoTune3000();
+          else escSetup();
         } else if (k == KEY_BACK) tryClearFault();
       }
     }
