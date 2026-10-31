@@ -454,6 +454,22 @@ static void keyTest() {
 
 // ---- Self-update: join the fixed hotspot, pull firmware.bin from the
 // latest GitHub release, flash it, reboot. Version shown on top = tracker.
+// OTA progress: redraw the bar only when the % changes (SSD1306 ~25ms/frame).
+static int otaLastPct = -1;
+static void otaProgress(int cur, int total) {
+  if (total <= 0) return;
+  int pct = (int)(100L * cur / total);
+  if (pct == otaLastPct) return;
+  otaLastPct = pct;
+  display.clearDisplay(); display.setCursor(0, 0);
+  display.println("Fetching bin...");
+  display.printf("%d%% %d/%d KB\n", pct, cur / 1024, total / 1024);
+  int bars = pct * 21 / 100;
+  for (int i = 0; i < 21; i++) display.print(i < bars ? '#' : '-');
+  display.println();
+  display.display();
+}
+
 static void updateFw() {
   display.clearDisplay(); display.setCursor(0, 0);
   display.println("UPDATE FW");
@@ -495,6 +511,8 @@ static void updateFw() {
   client.setTimeout(15000);
   httpUpdate.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
   httpUpdate.rebootOnUpdate(false);
+  otaLastPct = -1;
+  httpUpdate.onProgress(otaProgress);
   t_httpUpdate_return ret = httpUpdate.update(client, OTA_FW_URL, FW_VERSION);
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
