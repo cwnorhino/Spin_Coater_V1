@@ -22,6 +22,7 @@ struct FbCal {
   int cap = RPM_SAFE_MAX;         // run cap (default 8000, editable, <= ABSOLUTE)
   int fbMinRpm = FB_FALLBACK_RPM; // manual fallback floor
   int fbMaxRpm = RPM_SAFE_MAX;    // manual fallback cap
+  uint8_t tachPpr = 1;            // tach pulses per rev (2 if sensor double-counts)
 };
 
 static inline int rpmToUsCal(int rpm, const RpmCal &c) {
@@ -77,6 +78,8 @@ static inline void calibLoad(RpmCal &c, FbCal &f) {
   f.cap = p.getInt("cap", RPM_SAFE_MAX);
   f.fbMinRpm = p.getInt("fmin", FB_FALLBACK_RPM);
   f.fbMaxRpm = p.getInt("fmax", RPM_SAFE_MAX);
+  f.tachPpr = p.getUChar("ppr", 1);
+  if (f.tachPpr < 1 || f.tachPpr > 4) f.tachPpr = 1;
   if (f.cap > RPM_ABSOLUTE_MAX) f.cap = RPM_ABSOLUTE_MAX;
   if (f.cap < RPM_MIN) f.cap = RPM_SAFE_MAX;
   p.end();
@@ -103,6 +106,7 @@ static inline void calibSaveFb(const FbCal &f) {
   p.putInt("cap", f.cap);
   p.putInt("fmin", f.fbMinRpm);
   p.putInt("fmax", f.fbMaxRpm);
+  p.putUChar("ppr", f.tachPpr);
   p.end();
 }
 #endif

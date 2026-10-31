@@ -152,7 +152,8 @@ static int readTachRpm() {
   uint32_t since = micros() - last;
   if (since > TACH_TIMEOUT_US) return 0;
   if (since > period) period = since;  // slowing down: speed is at most this
-  return tachPeriodToRpm(period, TACH_PULSES_PER_REV);
+  uint8_t ppr = fbCal.tachPpr >= 1 && fbCal.tachPpr <= 4 ? fbCal.tachPpr : 1;
+  return tachPeriodToRpm(period, ppr);
 #else
   return -1;
 #endif
@@ -733,6 +734,12 @@ static void calFeedback() {
     prof.maxRpmCap = cap;
     calibSaveFb(fbCal);
     saveProfile();
+  }
+  // tach pulses/rev: 2 if the sensor counts double (two marks / shiny screw)
+  int ppr = fbCal.tachPpr;
+  if (editNumber(ppr, 1, 4, 1, "Tach pulse/rev")) {
+    fbCal.tachPpr = (uint8_t)ppr;
+    calibSaveFb(fbCal);
   }
   appMode = APP_MENU; redrawNow = true;
 }
