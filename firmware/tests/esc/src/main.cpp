@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include <ESP32Servo.h>
 
-#define ESC_PIN 23
+#define ESC_PIN 13   // real ESC pin (was 23, now tach input — never drive 23 as output)
 Servo esc;
 
 void setup() {

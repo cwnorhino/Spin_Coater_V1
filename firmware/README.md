@@ -14,9 +14,9 @@ tachometer feedback and layered software safety.
 | SimonK 30A ESC | signal → GPIO13, power → 12V | |
 | SSD1306 OLED (I2C) | SDA→21, SCL→22, VCC→5V, GND | addr 0x3C |
 | 4x4 keypad | rows→14,27,26,25 cols→33,32,18,19 | |
-| Tachometer (IR/hall) | GPIO34 + **external 10k pull-up to 3V3** | optional but recommended; set `USE_TACHO 1` |
-| E-stop button | GPIO35 → GND + **external 10k pull-up to 3V3** | `USE_ESTOP_PIN 1` (default); set 0 if not fitted |
-| Buzzer (active) | GPIO23 via NPN | optional |
+| Tachometer (reflective IR) | OUT→GPIO23, VCC→3V3 | 1 pulse/rev; `USE_TACHO 1` |
+| E-stop button | GPIO35 → GND + **external 10k pull-up to 3V3** | `USE_ESTOP_PIN 1` (default; set 0 if not fitted) |
+| Buzzer | not fitted | skipped |
 
 **Common ground is mandatory** — SMPS GND, buck GND, ESC GND, ESP32 GND all tie together.
 

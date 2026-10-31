@@ -1,0 +1,22 @@
+name: fw-release
+# Publishes firmware.bin to the GitHub release so the device's
+# menu 5 UPDATE can pull it from releases/latest/download/firmware.bin.
+# Usage: create a GitHub Release (tag like v1.2.0) -> this attaches the bin.
+on:
+  release:
+    types: [published]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install platformio
+      - run: cd firmware && pio run -e esp32dev
+      - run: gh release upload "${{ github.event.release.tag_name }}" firmware/.pio/build/esp32dev/firmware.bin --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
