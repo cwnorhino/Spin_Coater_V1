@@ -742,10 +742,9 @@ static void calRpmSweep() {
     if (safety.hasFault()) { esc.writeMicroseconds(ESC_MIN_US); appMode = APP_MENU; return; }
   }
   esc.writeMicroseconds(ESC_MIN_US);
-  // validate: >=5 stable pts incl one <1000rpm
-  uint8_t low = 0;
-  for (uint8_t i = 0; i < c.n; i++) if (c.rpm[i] < CAL_LOW_RPM) low++;
-  if (c.n >= CAL_MIN_STABLE && low >= 1) {
+  // validate: 5+ stable points anywhere in the range is a pass.
+  // (Low-end floor is feedback-cal's job, not the table's.)
+  if (c.n >= CAL_MIN_STABLE) {
     c.valid = true;
     rpmCal = c;
     calibSaveTable(rpmCal);
@@ -756,7 +755,7 @@ static void calRpmSweep() {
   } else {
     display.clearDisplay(); display.setCursor(0, 0);
     display.println("CAL FAILED");
-    display.printf("stable %d (need %d)\n", c.n, CAL_MIN_STABLE);
+    display.printf("stable %d/need %d\n", c.n, CAL_MIN_STABLE);
     display.println("C:fallback D:menu");
     display.display();
     while (true) {

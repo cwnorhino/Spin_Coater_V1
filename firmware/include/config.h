@@ -97,7 +97,7 @@ static inline float rpmAtFullThrottle() { return MOTOR_KV * SUPPLY_V * MOTOR_EFF
 #define BOOT_KEYTEST 0
 
 // Firmware version (shown on every screen + Serial boot; OTA compares this)
-#define FW_VERSION "1.4.0"
+#define FW_VERSION "1.4.1"
 
 // AUTO 3000 tune: rate-limited PI locks the measured 3000rpm point, nothing else.
 #define TUNE_TARGET_RPM   3000
