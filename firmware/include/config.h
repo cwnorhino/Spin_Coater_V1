@@ -28,13 +28,13 @@ static const uint8_t KEY_COL_PINS[KEY_COLS] = {33, 32, 18, 19};
 #define USE_ESTOP_PIN  1    // 1 = hardware E-stop wired on ESTOP_PIN
 #define USE_TACHO      1    // 1 = reflective IR tachometer on TACH_PIN (closed-loop)
 
-#define TACH_PIN       34   // IR/Hall tachometer, falling edge per pulse
+#define TACH_PIN       23   // reflective IR OUT here, falling edge per pulse (has pull-up + interrupt)
 #define ESTOP_PIN      35   // E-stop input
 // Level that means "STOP". NO button to GND + pull-up -> LOW.
 // Fail-safe option: NC button to GND + pull-up -> HIGH (broken wire = stop).
 #define ESTOP_ACTIVE_LEVEL LOW
 #define ISENSE_PIN     36   // Analog current sensor (ACS712/INA analog out), optional
-#define BUZZER_PIN     23   // Active buzzer via NPN or passive via LEDC (optional)
+#define BUZZER_PIN     -1   // not fitted (was 23, now tach)
 
 // Tachometer
 #define TACH_PULSES_PER_REV 1

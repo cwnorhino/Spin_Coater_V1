@@ -112,7 +112,7 @@ void IRAM_ATTR onTach() {
 
 void setupTacho() {
 #if USE_TACHO
-  pinMode(TACH_PIN, INPUT);         // reflective module drives OUT push-pull; no 10k needed
+  pinMode(TACH_PIN, INPUT_PULLUP);  // GPIO23: module drives OUT, pull-up keeps it HIGH if unplugged
   attachInterrupt(digitalPinToInterrupt(TACH_PIN), onTach, FALLING);
 #endif
 }

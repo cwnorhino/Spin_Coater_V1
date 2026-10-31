@@ -33,11 +33,11 @@ High current world with thick wires, and logic world on breadboard with thin wir
 
 11. Keypad membrane 8 pins. Four are rows, four are columns. Hold it with pins up, usually left 4 are rows, right 4 are cols, but verify with continuity beep mode, press a key and see which row touches which col. Then wire rows to GPIO14, 27, 26, 25 in order, cols to GPIO33, 32, 18, 19 in order. The firmware uses internal pullups so no resistors needed. Keep these as short Dupont jumpers.
 
-12. Future tachometer for real feedback, add now if you have the sensor. IR reflective or fork sensor module. VCC to ESP32 3V3, GND to GND rail, OUT to GPIO34, plus a REQUIRED 10k resistor from OUT to 3V3 (GPIO34 has no internal pull-up; without it the pin floats and reads garbage). Mount it so the chuck interrupts it once per rev. Then set USE_TACHO 1 in firmware/include/config.h and re-flash (tach trips stay dormant at the default 0). This matches R1 on the schematic.
+12. Tachometer (reflective IR module, 3-pin VCC/GND/OUT). VCC to ESP32 3V3 (**not 5V**), GND to GND rail, OUT to GPIO23. Falling edge, 1 pulse/rev (white stripe on matte-black chuck, 5–15 mm gap, tune onboard pot). GPIO23 has an internal pull-up enabled in firmware — no external 10k needed (module drives push-pull).
 
 13. Optional E-stop button. Normally open push button, one leg to GPIO35, other leg to GND, plus a REQUIRED 10k resistor from GPIO35 to 3V3 (GPIO35 has no internal pull-up; without it the pin floats LOW and the board boots straight into E-STOP). Pin reads LOW when pressed and firmware latches a fault + cuts to 1000us (motor coasts). Mount it where your hand can slap it. If no button is fitted, set USE_ESTOP_PIN 0 in firmware/include/config.h or the device boots faulted. This matches R2/SW1 on the schematic.
 
-14. Optional buzzer on GPIO23 through an NPN transistor, like 2N2222, with a 1k base resistor. Do not drive a buzzer directly from the pin if it is a big active one.
+14. Buzzer: not fitted — skipped.
 
 15. Small 100nF ceramic capacitor across ESP32 VIN and GND right at the board pins, for stability when the motor kicks.
 
