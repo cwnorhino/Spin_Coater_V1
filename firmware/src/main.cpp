@@ -272,24 +272,30 @@ static void drawMenu() {
     if (i == 1) display.print(fbCal.hasMin ? " [OK]" : " [--]");
     display.println();
   }
-  display.println("2/8:move #:sel *:STOP");
+  display.println("A/B:move C:ok *:STOP");
   display.display();
 }
 
 static void drawScreen() {
-  if (appMode == APP_MENU && !spinActive) { drawMenu(); return; }
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setCursor(0, 0);
-  if (safety.hasFault()) {
+  if (safety.hasFault()) {   // fault beats every mode: never silently menu
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setCursor(0, 0);
     display.println("!! FAULT !!");
     display.println(faultName(safety.s.fault));
     display.println();
     display.println("Motor output cut.");
     if (estopPinActive()) display.println("E-stop input active");
     else if (measRpm > 0) display.println("Wait: rotor turning");
-    else display.println("D: clear fault");
-  } else if (!spinActive) {
+    else display.println("C/#: clear fault");
+    display.display();
+    return;
+  }
+  if (appMode == APP_MENU && !spinActive) { drawMenu(); return; }
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  if (!spinActive) {
     display.printf("SPIN COATER %s\n", FW_VERSION);
     display.printf("RPM : %d (cap %d)\n", prof.targetRpm, prof.maxRpmCap);
     if (!rpmCal.valid) display.println("MAP: UNCAL (KV est)");
@@ -311,7 +317,8 @@ static void drawScreen() {
     else display.println("Tach: not fitted");
     display.printf("Cmd : %d rpm\n", cmdRpm);
     display.printf("ESC : %dus T:%+d\n", cmdUs, trimUs);
-    if (safety.s.currentLimited) display.println("CUR LIM");
+    if (cmdRpm > TACHO_LOST_MIN_CMD_RPM && measRpm == 0) display.println("!TACH?=0");
+    else if (safety.s.currentLimited) display.println("CUR LIM");
     display.println("D:STOP  *:E-STOP");
   }
   display.display();
@@ -511,8 +518,9 @@ static void updateFw() {
   }
 }
 
-// Edits a copy of the profile; commits (and saves) only if every field is confirmed.
-static void menuEdit() {
+// Edits a copy of the profile; commits (and saves) only if every field is
+// confirmed. Returns true when committed (caller auto-starts the run).
+static bool menuEdit() {
   SpinProfile p = prof;
   bool ok = editNumber(p.targetRpm, RPM_MIN, p.maxRpmCap, 100, "Target RPM")
          && editNumber(p.rampUpS, RAMP_MIN_S, RAMP_MAX_S, 1, "Ramp up s")
@@ -521,6 +529,7 @@ static void menuEdit() {
          && editEase(p.ease);
   if (ok) { prof = p; saveProfile(); }
   redrawNow = true;
+  return ok;
 }
 
 // ---- Cal 1: ~60s dense us->rpm sweep (12 pts, chuck only, top ~6000rpm) ----
@@ -749,7 +758,11 @@ void loop() {
         else if (k == KEY_OK || k == KEY_RUN) {
           if (menuIdx == 0) calRpmSweep();
           else if (menuIdx == 1) calFeedback();
-          else if (menuIdx == 2) { appMode = APP_RUN_SETUP; menuEdit(); appMode = spinActive ? APP_RUNNING : APP_MENU; }
+          else if (menuIdx == 2) {
+            appMode = APP_RUN_SETUP;
+            if (menuEdit() && !safety.hasFault()) startSpin();  // confirm all -> spins
+            else appMode = spinActive ? APP_RUNNING : APP_MENU;
+          }
           else if (menuIdx == 3) keyTest();
           else updateFw();
         } else if (k == KEY_BACK) tryClearFault();
