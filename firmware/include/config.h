@@ -97,7 +97,17 @@ static inline float rpmAtFullThrottle() { return MOTOR_KV * SUPPLY_V * MOTOR_EFF
 #define BOOT_KEYTEST 0
 
 // Firmware version (shown on every screen + Serial boot; OTA compares this)
-#define FW_VERSION "1.3.2"
+#define FW_VERSION "1.4.0"
+
+// AUTO 3000 tune: rate-limited PI locks the measured 3000rpm point, nothing else.
+#define TUNE_TARGET_RPM   3000
+#define TUNE_STABLE_MS    10000   // hold within lock band this long -> LOCKED
+#define TUNE_TIMEOUT_MS   120000  // give up after this long -> NO LOCK
+#define TUNE_STEP_MAX_US  25      // max throttle move per 200ms step (no jolts)
+#define TUNE_KP           0.02f
+#define TUNE_KI           0.005f
+#define TUNE_DEADBAND_RPM 60      // ignore error inside +-2%
+#define TUNE_LOCK_BAND_RPM 150    // +-5% counts as stable
 
 // Self-update: menu 5 UPDATE joins this hotspot and pulls firmware.bin
 // from the latest GitHub release, then flashes itself.

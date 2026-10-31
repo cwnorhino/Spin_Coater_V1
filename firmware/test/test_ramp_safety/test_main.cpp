@@ -160,7 +160,19 @@ static void test_calib_interp(void) {
   TEST_ASSERT_TRUE(us > ESC_SPIN_US && us <= ESC_SAFE_US);
 }
 
-// Trim authority capped at +-TRIM_MAX_US
+// Best-guess throttle: table > locked anchor point > KV curve
+static void test_best_anchor(void) {
+  RpmCal c; FbCal f;
+  int us = rpmToUsBest(3000, c, f);
+  TEST_ASSERT_TRUE(us > ESC_SPIN_US && us <= ESC_SAFE_US);
+  f.usRef = 1400; f.rpmRef = 3000;
+  TEST_ASSERT_EQUAL_INT(1400, rpmToUsBest(3000, c, f));
+  TEST_ASSERT_EQUAL_INT(1410, rpmToUsBest(3100, c, f));
+  c.valid = true; c.n = 2;
+  c.us[0] = 1150; c.rpm[0] = 500;
+  c.us[1] = 1500; c.rpm[1] = 5000;
+  TEST_ASSERT_EQUAL_INT(1150, rpmToUsBest(400, c, f));  // table wins over anchor
+}
 static void test_trim_cap(void) {
   TrimPI t;
   int out = 0;
@@ -187,6 +199,7 @@ int main(int argc, char** argv) {
   RUN_TEST(test_throttle_bounds);
   RUN_TEST(test_tach_period);
   RUN_TEST(test_calib_interp);
+  RUN_TEST(test_best_anchor);
   RUN_TEST(test_trim_cap);
   return UNITY_END();
 }

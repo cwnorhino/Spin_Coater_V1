@@ -23,6 +23,8 @@ struct FbCal {
   int fbMinRpm = FB_FALLBACK_RPM; // manual fallback floor
   int fbMaxRpm = RPM_SAFE_MAX;    // manual fallback cap
   uint8_t tachPpr = 1;            // tach pulses per rev (2 if sensor double-counts)
+  int usRef = 0;                  // AUTO 3000 locked throttle (0 = none yet)
+  int rpmRef = 3000;              // rpm the usRef point was locked at
 };
 
 static inline int rpmToUsCal(int rpm, const RpmCal &c) {
@@ -55,6 +57,18 @@ static inline int usToRpmCal(int us, const RpmCal &c) {
   return c.rpm[c.n - 1];
 }
 
+// Best throttle guess: dense table first, then the AUTO-locked point with a
+// shallow linear slope (~0.1 us/rpm), then the KV estimate. Always clamped.
+static inline int rpmToUsBest(int rpm, const RpmCal &c, const FbCal &f) {
+  if (c.valid && c.n >= 2) return rpmToUsCal(rpm, c);
+  int us;
+  if (f.usRef > 0) us = f.usRef + (int)((rpm - f.rpmRef) * 0.10f);
+  else us = rpmToUs(rpm);
+  if (us < ESC_MIN_US) us = ESC_MIN_US;
+  if (us > ESC_SAFE_US) us = ESC_SAFE_US;
+  return us;
+}
+
 #ifdef ARDUINO
 static inline void calibLoad(RpmCal &c, FbCal &f) {
   Preferences p;
@@ -80,6 +94,8 @@ static inline void calibLoad(RpmCal &c, FbCal &f) {
   f.fbMaxRpm = p.getInt("fmax", RPM_SAFE_MAX);
   f.tachPpr = p.getUChar("ppr", 1);
   if (f.tachPpr < 1 || f.tachPpr > 4) f.tachPpr = 1;
+  f.usRef = p.getInt("uref", 0);
+  f.rpmRef = p.getInt("rref", 3000);
   if (f.cap > RPM_ABSOLUTE_MAX) f.cap = RPM_ABSOLUTE_MAX;
   if (f.cap < RPM_MIN) f.cap = RPM_SAFE_MAX;
   p.end();
@@ -107,6 +123,8 @@ static inline void calibSaveFb(const FbCal &f) {
   p.putInt("fmin", f.fbMinRpm);
   p.putInt("fmax", f.fbMaxRpm);
   p.putUChar("ppr", f.tachPpr);
+  p.putInt("uref", f.usRef);
+  p.putInt("rref", f.rpmRef);
   p.end();
 }
 #endif

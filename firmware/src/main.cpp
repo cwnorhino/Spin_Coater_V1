@@ -47,7 +47,7 @@ static bool spinActive = false;
 static uint32_t spinStartMs = 0;
 static bool redrawNow = true;
 
-enum AppMode : uint8_t { APP_MENU, APP_RUN_SETUP, APP_RUNNING, APP_CAL_RPM, APP_CAL_FB };
+enum AppMode : uint8_t { APP_MENU, APP_RUN_SETUP, APP_RUNNING, APP_CAL_RPM, APP_CAL_FB, APP_TUNE };
 static AppMode appMode = APP_MENU;
 static uint8_t menuIdx = 2;       // default on RUN
 
@@ -212,7 +212,7 @@ static void saveProfile() {
 
 // Closed-loop throttle: table feedforward + capped PI trim.
 static int closedLoopUs(int targetRpm, int measured, uint32_t nowMs) {
-  int base = rpmToUsCal(targetRpm, rpmCal);
+  int base = rpmToUsBest(targetRpm, rpmCal, fbCal);
   if (targetRpm <= 0) { trimPI.reset(); return ESC_MIN_US; }
   bool tachOk = measured >= 0 && !(targetRpm > 800 && measured == 0 && (nowMs - spinStartMs) < 3000);
   // First 3 s allow spool-up before trim engages (avoids windup on deadband).
@@ -265,8 +265,8 @@ static void drawMenu() {
   display.setTextSize(1);
   display.setCursor(0, 0);
   display.printf("SPIN COATER %s\n", FW_VERSION);
-  static const char* rows[5] = {"1 CAL RPM MAP", "2 CAL FEEDBACK", "3 RUN SPIN", "4 KEY TEST", "5 UPDATE FW"};
-  for (uint8_t i = 0; i < 5; i++) {
+  static const char* rows[6] = {"1 CAL RPM MAP", "2 CAL FEEDBACK", "3 RUN SPIN", "4 KEY TEST", "5 UPDATE FW", "6 AUTO 3000"};
+  for (uint8_t i = 0; i < 6; i++) {
     if (i == menuIdx) display.print(">"); else display.print(" ");
     display.print(rows[i]);
     if (i == 0) display.print(rpmCal.valid ? " [OK]" : " [--]");
@@ -551,6 +551,138 @@ static bool menuEdit() {
   return ok;
 }
 
+// ---- AUTO 3000: lock one stable point, nothing else ----
+// Spools gently (rate-limited PI, no jolts), holds 3000 until it sits inside
+// +-5% for 10 s straight, saves that throttle as the feedforward anchor,
+// then keeps holding so you can hear/see stability. D stops anytime.
+static int median5(int *b) {
+  int s[5] = {b[0], b[1], b[2], b[3], b[4]};
+  for (int i = 1; i < 5; i++) {
+    int v = s[i], j = i - 1;
+    while (j >= 0 && s[j] > v) { s[j + 1] = s[j]; j--; }
+    s[j + 1] = v;
+  }
+  return s[2];
+}
+
+// One 5 Hz tune step: median tach -> rate-limited PI -> new us. Returns median.
+static int tuneStep(int &us, float &integ, int *buf, uint8_t &bi) {
+  measRpm = readTachRpm();
+  buf[bi] = measRpm; bi = (bi + 1) % 5;
+  int med = median5(buf);
+  int err = TUNE_TARGET_RPM - med;
+  if (err > -TUNE_DEADBAND_RPM && err < TUNE_DEADBAND_RPM) err = 0;
+  integ += err * 0.2f;
+  float maxI = (float)TUNE_STEP_MAX_US * 8 / TUNE_KI;  // anti-windup
+  if (integ > maxI) integ = maxI;
+  if (integ < -maxI) integ = -maxI;
+  float du = TUNE_KP * err + TUNE_KI * integ;
+  if (du > TUNE_STEP_MAX_US) du = TUNE_STEP_MAX_US;
+  if (du < -TUNE_STEP_MAX_US) du = -TUNE_STEP_MAX_US;
+  us += (int)du;
+  if (us < ESC_SPIN_US + 10) us = ESC_SPIN_US + 10;
+  if (us > ESC_SAFE_US) us = ESC_SAFE_US;
+  esc.writeMicroseconds(us);
+  return med;
+}
+
+static void autoTune3000() {
+  appMode = APP_TUNE;
+  display.clearDisplay(); display.setCursor(0, 0);
+  display.println("AUTO 3000");
+  display.println("Chuck on, clear!");
+  display.println("C:start D:abort");
+  display.display();
+  while (true) {
+    bool ab; char k = menuKey(ab);
+    if (ab) { appMode = APP_MENU; return; }
+    if (k == KEY_BACK) { appMode = APP_MENU; redrawNow = true; return; }
+    if (k == KEY_OK || k == KEY_RUN) break;
+  }
+  int us = rpmToUsBest(TUNE_TARGET_RPM, rpmCal, fbCal);
+  if (us < ESC_SPIN_US + 20) us = ESC_SPIN_US + 20;
+  esc.writeMicroseconds(us);
+  Serial.println("tune_ms,tach_rpm,esc_us,err");
+  uint32_t t0 = millis(), lastCtl = 0, lastLog = 0, lastDisp = 0, stableSince = 0;
+  int buf[5] = {0, 0, 0, 0, 0}; uint8_t bi = 0;
+  float integ = 0;
+  bool locked = false;
+  int med = 0;
+  while (millis() - t0 < TUNE_TIMEOUT_MS) {
+    if (estopPinActive()) safety.pressEstop();
+    char k = keys.getKey();
+    if (safety.hasFault() || k == KEY_BACK || k == KEY_ESTOP) break;
+    measRpm = readTachRpm();
+    safety.update(TUNE_TARGET_RPM, measRpm, millis(), prof.maxRpmCap);  // trips armed
+    if (safety.hasFault()) break;
+    uint32_t now = millis();
+    if (now - lastCtl >= 200) {
+      lastCtl = now;
+      med = tuneStep(us, integ, buf, bi);
+      int dev = abs(TUNE_TARGET_RPM - med);
+      if (med > 0 && dev <= TUNE_LOCK_BAND_RPM) {
+        if (!stableSince) stableSince = now;
+        if (now - stableSince >= TUNE_STABLE_MS) { locked = true; break; }
+      } else stableSince = 0;
+      if (now - lastLog >= 500) {
+        lastLog = now;
+        Serial.printf("%lu,%d,%d,%d\n", (unsigned long)(now - t0), med, us, TUNE_TARGET_RPM - med);
+      }
+    }
+    if (now - lastDisp >= 250) {
+      lastDisp = now;
+      display.clearDisplay(); display.setCursor(0, 0);
+      display.printf("TUNE %d\n", TUNE_TARGET_RPM);
+      display.printf("Tach %d rpm\n", measRpm);
+      display.printf("ESC %dus\n", us);
+      display.println("wait... D:abort");
+      display.display();
+    }
+    delay(10);
+  }
+  if (locked) {
+    fbCal.usRef = us; fbCal.rpmRef = TUNE_TARGET_RPM;
+    calibSaveFb(fbCal);
+    // Hold the lock so stability can be seen/heard. Same control, D stops.
+    while (true) {
+      if (estopPinActive()) safety.pressEstop();
+      char k = keys.getKey();
+      if (safety.hasFault() || k == KEY_BACK || k == KEY_ESTOP) break;
+      measRpm = readTachRpm();
+      safety.update(TUNE_TARGET_RPM, measRpm, millis(), prof.maxRpmCap);
+      if (safety.hasFault()) break;
+      uint32_t now = millis();
+      if (now - lastCtl >= 200) {
+        lastCtl = now;
+        med = tuneStep(us, integ, buf, bi);
+        if (now - lastLog >= 500) {
+          lastLog = now;
+          Serial.printf("%lu,%d,%d,%d\n", (unsigned long)(now - t0), med, us, TUNE_TARGET_RPM - med);
+        }
+      }
+      if (now - lastDisp >= 250) {
+        lastDisp = now;
+        display.clearDisplay(); display.setCursor(0, 0);
+        display.println("LOCKED 3000");
+        display.printf("Tach %d rpm\n", measRpm);
+        display.printf("ESC %dus\n", us);
+        display.println("D:stop (saved)");
+        display.display();
+      }
+      delay(10);
+    }
+  } else {
+    display.clearDisplay(); display.setCursor(0, 0);
+    display.println("NO LOCK");
+    display.printf("tach %d us %d\n", measRpm, us);
+    display.println("D:menu");
+    display.display();
+    while (keys.getKey() != KEY_BACK && !safety.hasFault()) delay(50);
+  }
+  esc.writeMicroseconds(ESC_MIN_US);
+  appMode = APP_MENU; redrawNow = true;
+}
+
 // ---- Cal 1: ~60s dense us->rpm sweep (12 pts, chuck only, top ~6000rpm) ----
 static void calRpmSweep() {
   appMode = APP_CAL_RPM;
@@ -777,9 +909,9 @@ void loop() {
         // (D alone is not enough if that key itself is dead).
         if (k == KEY_BACK || k == KEY_OK || k == KEY_RUN) tryClearFault();
       } else {
-        if (k == KEY_UP || k == '2') menuIdx = (menuIdx + 4) % 5;
-        else if (k == KEY_DOWN || k == '8') menuIdx = (menuIdx + 1) % 5;
-        else if (k >= '1' && k <= '5') menuIdx = k - '1';
+        if (k == KEY_UP || k == '2') menuIdx = (menuIdx + 5) % 6;
+        else if (k == KEY_DOWN || k == '8') menuIdx = (menuIdx + 1) % 6;
+        else if (k >= '1' && k <= '6') menuIdx = k - '1';
         else if (k == KEY_OK || k == KEY_RUN) {
           if (menuIdx == 0) calRpmSweep();
           else if (menuIdx == 1) calFeedback();
@@ -789,7 +921,8 @@ void loop() {
             else appMode = spinActive ? APP_RUNNING : APP_MENU;
           }
           else if (menuIdx == 3) keyTest();
-          else updateFw();
+          else if (menuIdx == 4) updateFw();
+          else autoTune3000();
         } else if (k == KEY_BACK) tryClearFault();
       }
     }
