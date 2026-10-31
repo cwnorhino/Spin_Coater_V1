@@ -5,6 +5,10 @@
 #include <Adafruit_SSD1306.h>
 #include <ESP32Servo.h>
 #include <Keypad.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <HTTPUpdate.h>
+#include <WiFiClientSecure.h>
 #include "config.h"
 #include "spin_math.h"
 #include "safety.h"
@@ -92,6 +96,7 @@ static void splashV1() {
   }
   delay(350);
   display.clearDisplay();
+  display.setTextSize(1);
   display.display();
 }
 
@@ -256,18 +261,16 @@ static void drawMenu() {
   display.clearDisplay();
   display.setTextSize(1);
   display.setCursor(0, 0);
-  display.println("SPIN COATER V1");
-  const char* rows[3] = {"1 CAL RPM MAP", "2 CAL FEEDBACK", "3 RUN SPIN"};
-  for (uint8_t i = 0; i < 3; i++) {
+  display.printf("SPIN COATER %s\n", FW_VERSION);
+  static const char* rows[5] = {"1 CAL RPM MAP", "2 CAL FEEDBACK", "3 RUN SPIN", "4 KEY TEST", "5 UPDATE FW"};
+  for (uint8_t i = 0; i < 5; i++) {
     if (i == menuIdx) display.print(">"); else display.print(" ");
     display.print(rows[i]);
     if (i == 0) display.print(rpmCal.valid ? " [OK]" : " [--]");
     if (i == 1) display.print(fbCal.hasMin ? " [OK]" : " [--]");
     display.println();
   }
-  display.println();
-  display.printf("Cap:%d Min:%d\n", fbCal.cap, fbCal.hasMin ? fbCal.rpmMin : fbCal.fbMinRpm);
-  display.println("A/B:move C:ok *:STOP");
+  display.println("2/8:move #:sel *:STOP");
   display.display();
 }
 
@@ -285,7 +288,7 @@ static void drawScreen() {
     else if (measRpm > 0) display.println("Wait: rotor turning");
     else display.println("D: clear fault");
   } else if (!spinActive) {
-    display.println("SPIN COATER v1.1");
+    display.printf("SPIN COATER %s\n", FW_VERSION);
     display.printf("RPM : %d (cap %d)\n", prof.targetRpm, prof.maxRpmCap);
     if (!rpmCal.valid) display.println("MAP: UNCAL (KV est)");
     else display.printf("MAP: cal %d pts\n", rpmCal.n);
@@ -399,6 +402,102 @@ static bool editEase(uint8_t &ease) {
     else if (k == KEY_DOWN) e = (e + 3) % 4;
     else if (k == KEY_OK) { ease = e; return true; }
     else if (k == KEY_BACK) return false;
+  }
+}
+
+// ---- Key test: shows the raw char for every physical press ----
+// Use it to verify the membrane map (press physical C/D, read what arrives).
+// Exit with '#'. Pressing '*' latches E-stop and drops back to the menu.
+static void keyTest() {
+  int count = 0;
+  char last = 0;
+  bool redraw = true;
+  while (true) {
+    if (redraw) {
+      display.clearDisplay(); display.setCursor(0, 0);
+      display.println("KEY TEST  #:exit");
+      if (last) {
+        display.setTextSize(2); display.printf("'%c'\n", last); display.setTextSize(1);
+        display.printf("0x%02X #%d\n", (unsigned char)last, count);
+      } else display.println("press a key...");
+      display.println("(*=E-STOP)");
+      display.display();
+      redraw = false;
+    }
+    if (estopPinActive()) safety.pressEstop();
+    if (safety.hasFault()) return;
+    char k = keys.getKey();
+    if (k == NO_KEY) { delay(10); continue; }
+    if (k == KEY_RUN) return;
+    last = k; count++;
+    Serial.printf("key=0x%02X '%c'\n", (unsigned char)k, k);
+    redraw = true;
+  }
+}
+
+// ---- Self-update: join the fixed hotspot, pull firmware.bin from the
+// latest GitHub release, flash it, reboot. Version shown on top = tracker.
+static void updateFw() {
+  display.clearDisplay(); display.setCursor(0, 0);
+  display.println("UPDATE FW");
+  display.printf("cur %s\n", FW_VERSION);
+  display.println("hotspot:Terminal 2");
+  display.println("5:go  #:back");
+  display.display();
+  while (true) {
+    bool ab; char k = menuKey(ab);
+    if (ab) return;
+    if (k == KEY_BACK || k == KEY_RUN) return;
+    if (k == KEY_OK || k == '5') break;
+  }
+  display.clearDisplay(); display.setCursor(0, 0);
+  display.println("Connecting...");
+  display.display();
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect(true, true);
+  WiFi.begin(OTA_SSID, OTA_PASS);
+  uint32_t t0 = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 20000) {
+    if (keys.getKey() == KEY_ESTOP) { safety.pressEstop(); WiFi.mode(WIFI_OFF); return; }
+    display.print("."); display.display();
+    delay(500);
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    display.println("\nWiFi FAIL");
+    display.println("#:back");
+    display.display();
+    WiFi.mode(WIFI_OFF);
+    while (keys.getKey() != KEY_RUN) delay(50);
+    return;
+  }
+  display.println("\nFetching bin...");
+  display.display();
+  Serial.printf("OTA start cur=%s\n", FW_VERSION);
+  WiFiClientSecure client;
+  client.setInsecure();
+  client.setTimeout(15000);
+  httpUpdate.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+  httpUpdate.rebootOnUpdate(false);
+  t_httpUpdate_return ret = httpUpdate.update(client, OTA_FW_URL, FW_VERSION);
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  display.clearDisplay(); display.setCursor(0, 0);
+  if (ret == HTTP_UPDATE_OK) {
+    display.println("UPDATE OK");
+    display.println("rebooting...");
+    display.display();
+    Serial.println("OTA OK, rebooting");
+    delay(1500);
+    ESP.restart();
+  } else {
+    display.println("UPDATE FAIL");
+    display.println(httpUpdate.getLastErrorString());
+    display.printf("err %d\n", httpUpdate.getLastError());
+    display.println("#:back");
+    display.display();
+    Serial.printf("OTA FAIL err=%d %s\n", httpUpdate.getLastError(),
+                  httpUpdate.getLastErrorString().c_str());
+    while (keys.getKey() != KEY_RUN) delay(50);
   }
 }
 
@@ -606,12 +705,12 @@ void setup() {
   Serial.begin(115200);
   setupDisplay();
   splashV1();
-  display.println("Arming ESC..."); display.display();
-  setupESC();                       // blocks ESC_ARM_TIME_MS at ESC_ARM_US
+  setupESC();                       // blocks ESC_ARM_TIME_MS at ESC_ARM_US (no splash text)
   setupTacho();
   setupEstop();
   calibLoad(rpmCal, fbCal);
   loadProfile();
+  Serial.printf("SpinCoater %s boot (cal=%d fbmin=%d)\n", FW_VERSION, rpmCal.valid, fbCal.hasMin);
   keys.addEventListener([](char e){ if (e == KEY_ESTOP) safety.pressEstop(); });
   redrawNow = true;
 }
@@ -626,14 +725,22 @@ void loop() {
     redrawNow = true;
     if (k == KEY_ESTOP) { safety.pressEstop(); stopSpin(); appMode = APP_MENU; }
     else if (appMode == APP_MENU && !spinActive) {
-      if (k == KEY_UP || k == '2') menuIdx = (menuIdx + 2) % 3;
-      else if (k == KEY_DOWN || k == '8') menuIdx = (menuIdx + 1) % 3;
-      else if (k >= '1' && k <= '3') menuIdx = k - '1';
-      else if (k == KEY_OK || k == KEY_RUN) {
-        if (menuIdx == 0) calRpmSweep();
-        else if (menuIdx == 1) calFeedback();
-        else { appMode = APP_RUN_SETUP; menuEdit(); appMode = spinActive ? APP_RUNNING : APP_MENU; }
-      } else if (k == KEY_BACK && safety.hasFault()) tryClearFault();
+      if (safety.hasFault()) {
+        // E-stop trip: any of D/C/# clears once input released + rotor stopped
+        // (D alone is not enough if that key itself is dead).
+        if (k == KEY_BACK || k == KEY_OK || k == KEY_RUN) tryClearFault();
+      } else {
+        if (k == KEY_UP || k == '2') menuIdx = (menuIdx + 4) % 5;
+        else if (k == KEY_DOWN || k == '8') menuIdx = (menuIdx + 1) % 5;
+        else if (k >= '1' && k <= '5') menuIdx = k - '1';
+        else if (k == KEY_OK || k == KEY_RUN) {
+          if (menuIdx == 0) calRpmSweep();
+          else if (menuIdx == 1) calFeedback();
+          else if (menuIdx == 2) { appMode = APP_RUN_SETUP; menuEdit(); appMode = spinActive ? APP_RUNNING : APP_MENU; }
+          else if (menuIdx == 3) keyTest();
+          else updateFw();
+        } else if (k == KEY_BACK) tryClearFault();
+      }
     }
     else if (appMode == APP_RUN_SETUP) { /* menuEdit owns keys */ }
     else {
