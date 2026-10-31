@@ -25,12 +25,14 @@ static RpmCal rpmCal;
 static FbCal fbCal;
 static TrimPI trimPI;
 
-// Rotated 180° vs label order (see AGENTS.md). DO NOT revert to naive map.
+// Straight label-order map: verified 2026-10-31 via boot KEY TEST
+// (physical 1/2/3/A -> electrical row 0 in order). The old rotated map
+// made B/C/D arrive as digits 3/2/1.
 static const byte KEY_MAP[KEY_ROWS][KEY_COLS] = {
-  {'D','C','B','A'},
-  {'#','9','6','3'},
-  {'0','8','5','2'},
-  {'*','7','4','1'}
+  {'1','2','3','A'},
+  {'4','5','6','B'},
+  {'7','8','9','C'},
+  {'*','0','#','D'}
 };
 static byte key_row_pins[KEY_ROWS] = { KEY_ROW_PINS[0], KEY_ROW_PINS[1], KEY_ROW_PINS[2], KEY_ROW_PINS[3] };
 static byte key_col_pins[KEY_COLS] = { KEY_COL_PINS[0], KEY_COL_PINS[1], KEY_COL_PINS[2], KEY_COL_PINS[3] };
