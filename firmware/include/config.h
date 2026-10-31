@@ -93,6 +93,9 @@ static inline float rpmAtFullThrottle() { return MOTOR_KV * SUPPLY_V * MOTOR_EFF
 // Ease: 0=Linear 1=EaseIn 2=EaseOut 3=S-Curve
 #define DEF_EASE 3
 
+// Temp debug: boot straight into KEY TEST (set 0 for normal menu boot).
+#define BOOT_KEYTEST 1
+
 // Firmware version (shown on every screen + Serial boot; OTA compares this)
 #define FW_VERSION "1.2.0"
 

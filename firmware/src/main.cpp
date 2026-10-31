@@ -411,7 +411,9 @@ static bool editEase(uint8_t &ease) {
 static void keyTest() {
   int count = 0;
   char last = 0;
+  char hist[7] = {0};   // last 6 keys, oldest first
   bool redraw = true;
+  uint32_t lastPress = millis();
   while (true) {
     if (redraw) {
       display.clearDisplay(); display.setCursor(0, 0);
@@ -419,17 +421,23 @@ static void keyTest() {
       if (last) {
         display.setTextSize(2); display.printf("'%c'\n", last); display.setTextSize(1);
         display.printf("0x%02X #%d\n", (unsigned char)last, count);
+        display.printf("<%s\n", hist);
       } else display.println("press a key...");
-      display.println("(*=E-STOP)");
+      display.println("45s idle->menu");
       display.display();
       redraw = false;
     }
     if (estopPinActive()) safety.pressEstop();
     if (safety.hasFault()) return;
+    if (millis() - lastPress > 45000) return;   // inactivity -> back to menu
     char k = keys.getKey();
     if (k == NO_KEY) { delay(10); continue; }
     if (k == KEY_RUN) return;
+    lastPress = millis();
     last = k; count++;
+    int n = 0; while (n < 6 && hist[n]) n++;
+    if (n == 6) { for (int i = 0; i < 5; i++) hist[i] = hist[i + 1]; n = 5; }
+    hist[n] = k; hist[n + 1] = 0;
     Serial.printf("key=0x%02X '%c'\n", (unsigned char)k, k);
     redraw = true;
   }
@@ -711,6 +719,9 @@ void setup() {
   calibLoad(rpmCal, fbCal);
   loadProfile();
   Serial.printf("SpinCoater %s boot (cal=%d fbmin=%d)\n", FW_VERSION, rpmCal.valid, fbCal.hasMin);
+#if BOOT_KEYTEST
+  keyTest();   // temp: straight into key diagnostics, 45s idle or '#' -> menu
+#endif
   keys.addEventListener([](char e){ if (e == KEY_ESTOP) safety.pressEstop(); });
   redrawNow = true;
 }
