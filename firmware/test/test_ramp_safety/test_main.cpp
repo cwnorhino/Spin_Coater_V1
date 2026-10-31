@@ -2,6 +2,8 @@
 // Tests the real firmware headers (config.h builds without Arduino.h natively).
 #include "spin_math.h"
 #include "safety.h"
+#include "calib.h"
+#include "feedback.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -141,6 +143,35 @@ static void test_tach_period(void) {
   TEST_ASSERT_EQUAL_INT(TACH_MAX_RPM, tachPeriodToRpm(TACH_MIN_PERIOD_US, TACH_PULSES_PER_REV));
 }
 
+// Table interp: clamps, lerps, invalid falls back to KV curve
+static void test_calib_interp(void) {
+  RpmCal c;
+  c.valid = true; c.n = 3;
+  c.us[0] = 1150; c.rpm[0] = 500;
+  c.us[1] = 1300; c.rpm[1] = 2000;
+  c.us[2] = 1500; c.rpm[2] = 5000;
+  TEST_ASSERT_EQUAL_INT(1150, rpmToUsCal(400, c));    // below range clamps
+  TEST_ASSERT_EQUAL_INT(1500, rpmToUsCal(6000, c));   // above range clamps
+  int mid = rpmToUsCal(1250, c);                      // halfway 500->2000
+  TEST_ASSERT_TRUE(mid > 1150 && mid < 1300);
+  TEST_ASSERT_EQUAL_INT(2000, usToRpmCal(1300, c));
+  RpmCal bad; // invalid -> KV fallback, must stay in bounds
+  int us = rpmToUsCal(3000, bad);
+  TEST_ASSERT_TRUE(us > ESC_SPIN_US && us <= ESC_SAFE_US);
+}
+
+// Trim authority capped at +-TRIM_MAX_US
+static void test_trim_cap(void) {
+  TrimPI t;
+  int out = 0;
+  for (int i = 0; i < 200; i++) out = t.update(3000, 0, true, 1000 + i * 200);
+  TEST_ASSERT_TRUE(out <= TRIM_MAX_US && out >= -TRIM_MAX_US);
+  TrimPI t2;
+  int out2 = 0;
+  for (int i = 0; i < 200; i++) out2 = t2.update(3000, 6000, true, 1000 + i * 200);
+  TEST_ASSERT_TRUE(out2 >= -TRIM_MAX_US && out2 <= TRIM_MAX_US);
+}
+
 int main(int argc, char** argv) {
   (void)argc; (void)argv;
   UNITY_BEGIN();
@@ -155,5 +186,7 @@ int main(int argc, char** argv) {
   RUN_TEST(test_safety_tacho_lost);
   RUN_TEST(test_throttle_bounds);
   RUN_TEST(test_tach_period);
+  RUN_TEST(test_calib_interp);
+  RUN_TEST(test_trim_cap);
   return UNITY_END();
 }

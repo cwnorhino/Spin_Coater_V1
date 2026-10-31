@@ -83,11 +83,13 @@ class Safety {
       } else {
         s.overRpmTiming = false;
       }
-      // Tach fitted: commanding > TACHO_LOST_MIN_CMD_RPM with zero pulses for
-      // 5 s means the sensor is lost/misaligned or the motor stalled.
+      // Tach fitted: commanding > TACHO_LOST_MIN_CMD_RPM with zero pulses
+      // means the sensor is lost/misaligned or the motor stalled.
+      // Low-RPM grace: below 800 rpm the sensorless motor cogs, so allow 8 s.
       if (rpm > TACHO_LOST_MIN_CMD_RPM && measRpm == 0) {
+        uint32_t grace = rpm < 800 ? 8000 : 5000;
         if (!s.noTachoTiming) { s.noTachoTiming = true; s.spinNoTachoSince = nowMs; }
-        if (nowMs - s.spinNoTachoSince > 5000) { s.fault = FAULT_TACHO_LOST; return 0; }
+        if (nowMs - s.spinNoTachoSince > grace) { s.fault = FAULT_TACHO_LOST; return 0; }
       } else {
         s.noTachoTiming = false;
       }

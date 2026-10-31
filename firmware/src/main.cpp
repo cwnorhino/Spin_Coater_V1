@@ -8,6 +8,8 @@
 #include "config.h"
 #include "spin_math.h"
 #include "safety.h"
+#include "calib.h"
+#include "feedback.h"
 
 // ---- Globals ----
 static Adafruit_SSD1306 display(OLED_W, OLED_H, &Wire, -1);
@@ -15,12 +17,16 @@ static Servo esc;
 static Safety safety;
 static SpinProfile prof;
 static Preferences prefs;
+static RpmCal rpmCal;
+static FbCal fbCal;
+static TrimPI trimPI;
 
+// Rotated 180° vs label order (see AGENTS.md). DO NOT revert to naive map.
 static const byte KEY_MAP[KEY_ROWS][KEY_COLS] = {
-  {'1','2','3','A'},
-  {'4','5','6','B'},
-  {'7','8','9','C'},
-  {'*','0','#','D'}
+  {'D','C','B','A'},
+  {'#','9','6','3'},
+  {'0','8','5','2'},
+  {'*','7','4','1'}
 };
 static byte key_row_pins[KEY_ROWS] = { KEY_ROW_PINS[0], KEY_ROW_PINS[1], KEY_ROW_PINS[2], KEY_ROW_PINS[3] };
 static byte key_col_pins[KEY_COLS] = { KEY_COL_PINS[0], KEY_COL_PINS[1], KEY_COL_PINS[2], KEY_COL_PINS[3] };
@@ -30,17 +36,20 @@ static Keypad keys = Keypad(makeKeymap(KEY_MAP), key_row_pins, key_col_pins, KEY
 static int measRpm = -1;          // tach RPM, -1 = no tach fitted
 static int cmdRpm = 0;            // last safety-clamped command
 static int cmdUs = ESC_MIN_US;    // last ESC pulse width written
+static int trimUs = 0;            // closed-loop trim component
 static bool spinActive = false;
 static uint32_t spinStartMs = 0;
 static bool redrawNow = true;
 
+enum AppMode : uint8_t { APP_MENU, APP_RUN_SETUP, APP_RUNNING, APP_CAL_RPM, APP_CAL_FB };
+static AppMode appMode = APP_MENU;
+static uint8_t menuIdx = 2;       // default on RUN
+
 // Tach: ISR records the time between pulses (period method — full resolution
 // at any speed, unlike counting 1 pulse/rev in a short window).
-#if USE_TACHO
 static portMUX_TYPE tachMux = portMUX_INITIALIZER_UNLOCKED;
 static volatile uint32_t tachLastUs = 0;
 static volatile uint32_t tachPeriodUs = 0;   // 0 = no pulse seen yet
-#endif
 
 // ---- Hardware setup ----
 void setupESC() {
@@ -65,8 +74,31 @@ void setupDisplay() {
   display.display();
 }
 
-#if USE_TACHO
-// Tach ISR — wire a photointerrupter / hall sensor to TACH_PIN.
+// ---- Splash: V1 fades in/out, any key skips ----
+static void splashV1() {
+  display.clearDisplay();
+  display.setTextSize(4);
+  // center "V1" on 128x64 at size 4 (48x32 glyph box)
+  display.setCursor(40, 16);
+  display.print("V1");
+  display.display();
+  // fake fade on SSD1306 (no backlight): invert pulses read as fade
+  for (int i = 0; i < 3; i++) {
+    if (keys.getKey() != NO_KEY) break;
+    delay(220);
+    display.invertDisplay(true);
+    delay(160);
+    display.invertDisplay(false);
+  }
+  delay(350);
+  display.clearDisplay();
+  display.display();
+}
+
+// IRAM_ATTR on ESP32 (no-op natively for unit tests).
+#ifndef IRAM_ATTR
+#define IRAM_ATTR
+#endif
 void IRAM_ATTR onTach() {
   uint32_t now = micros();
   portENTER_CRITICAL_ISR(&tachMux);
@@ -77,11 +109,10 @@ void IRAM_ATTR onTach() {
   }
   portEXIT_CRITICAL_ISR(&tachMux);
 }
-#endif
 
 void setupTacho() {
 #if USE_TACHO
-  pinMode(TACH_PIN, INPUT);         // GPIO34: no internal pull-up, fit 10k to 3V3
+  pinMode(TACH_PIN, INPUT);         // reflective module drives OUT push-pull; no 10k needed
   attachInterrupt(digitalPinToInterrupt(TACH_PIN), onTach, FALLING);
 #endif
 }
@@ -120,6 +151,24 @@ static int readTachRpm() {
 #endif
 }
 
+// Median of N tach samples (rejects single missed-pulse glitches).
+static int tachMedian(int n, int gapMs) {
+  int buf[16];
+  if (n > 16) n = 16;
+  for (int i = 0; i < n; i++) {
+    if (estopPinActive()) safety.pressEstop();
+    buf[i] = readTachRpm();
+    delay(gapMs);
+  }
+  // insertion sort
+  for (int i = 1; i < n; i++) {
+    int v = buf[i], j = i - 1;
+    while (j >= 0 && buf[j] > v) { buf[j + 1] = buf[j]; j--; }
+    buf[j + 1] = v;
+  }
+  return buf[n / 2];
+}
+
 // ---- Profile storage (NVS) ----
 static void loadProfile() {
   SpinProfile p;
@@ -133,11 +182,13 @@ static void loadProfile() {
   }
   // Re-validate stored values against the current limits.
   SpinProfile d;
-  if (p.targetRpm < RPM_MIN || p.targetRpm > p.maxRpmCap) p.targetRpm = d.targetRpm;
+  int cap = fbCal.cap > 0 ? fbCal.cap : RPM_SAFE_MAX;
+  if (p.targetRpm < RPM_MIN || p.targetRpm > cap) p.targetRpm = d.targetRpm;
   if (p.rampUpS < RAMP_MIN_S || p.rampUpS > RAMP_MAX_S) p.rampUpS = d.rampUpS;
   if (p.holdS < 0 || p.holdS > HOLD_MAX_S) p.holdS = d.holdS;
   if (p.rampDnS < RAMP_MIN_S || p.rampDnS > RAMP_MAX_S) p.rampDnS = d.rampDnS;
   if (p.ease > 3) p.ease = d.ease;
+  p.maxRpmCap = cap;
   prof = p;
 }
 
@@ -151,18 +202,36 @@ static void saveProfile() {
   prefs.end();
 }
 
+// Closed-loop throttle: table feedforward + capped PI trim.
+static int closedLoopUs(int targetRpm, int measured, uint32_t nowMs) {
+  int base = rpmToUsCal(targetRpm, rpmCal);
+  if (targetRpm <= 0) { trimPI.reset(); return ESC_MIN_US; }
+  bool tachOk = measured >= 0 && !(targetRpm > 800 && measured == 0 && (nowMs - spinStartMs) < 3000);
+  // First 3 s allow spool-up before trim engages (avoids windup on deadband).
+  if ((nowMs - spinStartMs) < 3000 && (appMode == APP_RUNNING)) tachOk = false;
+  trimUs = trimPI.update(targetRpm, measured < 0 ? targetRpm : measured, tachOk, nowMs);
+  int us = base + trimUs;
+  if (us < ESC_MIN_US) us = ESC_MIN_US;
+  if (us > ESC_SAFE_US) us = ESC_SAFE_US;
+  return us;
+}
+
 // ---- Main spin state machine ----
 static void stopSpin() {
   esc.writeMicroseconds(ESC_MIN_US);
   spinActive = false;
+  trimPI.reset();
+  trimUs = 0;
   cmdRpm = 0;
   cmdUs = ESC_MIN_US;
 }
 
 static void startSpin() {
   spinActive = true;
+  appMode = APP_RUNNING;
   spinStartMs = millis();
-  Serial.println("t_ms,cmd_rpm,esc_us,tach_rpm");
+  trimPI.reset();
+  Serial.println("t_ms,cmd_rpm,esc_us,tach_rpm,trim_us");
 }
 
 // D on the fault screen. Refused while the E-stop input is held or the tach
@@ -173,17 +242,37 @@ static void tryClearFault() {
   safety.clear();
 }
 
-// CSV over Serial at 10 Hz during a run (for RPM-vs-us calibration / tuning).
+// CSV over Serial at 10 Hz (for RPM-vs-us calibration / tuning).
 static void logTelemetry(uint32_t now, uint32_t elapsed) {
   static uint32_t lastLog = 0;
   if (now - lastLog < 100) return;
   lastLog = now;
-  Serial.printf("%lu,%d,%d,%d\n", (unsigned long)elapsed, cmdRpm, cmdUs, measRpm);
+  Serial.printf("%lu,%d,%d,%d,%d\n", (unsigned long)elapsed, cmdRpm, cmdUs, measRpm, trimUs);
 }
 
 // ---- UI ----
 // 128x64 at text size 1 = 21 chars x 8 lines.
+static void drawMenu() {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.println("SPIN COATER V1");
+  const char* rows[3] = {"1 CAL RPM MAP", "2 CAL FEEDBACK", "3 RUN SPIN"};
+  for (uint8_t i = 0; i < 3; i++) {
+    if (i == menuIdx) display.print(">"); else display.print(" ");
+    display.print(rows[i]);
+    if (i == 0) display.print(rpmCal.valid ? " [OK]" : " [--]");
+    if (i == 1) display.print(fbCal.hasMin ? " [OK]" : " [--]");
+    display.println();
+  }
+  display.println();
+  display.printf("Cap:%d Min:%d\n", fbCal.cap, fbCal.hasMin ? fbCal.rpmMin : fbCal.fbMinRpm);
+  display.println("A/B:move C:ok *:STOP");
+  display.display();
+}
+
 static void drawScreen() {
+  if (appMode == APP_MENU && !spinActive) { drawMenu(); return; }
   display.clearDisplay();
   display.setTextSize(1);
   display.setCursor(0, 0);
@@ -198,6 +287,8 @@ static void drawScreen() {
   } else if (!spinActive) {
     display.println("SPIN COATER v1.1");
     display.printf("RPM : %d (cap %d)\n", prof.targetRpm, prof.maxRpmCap);
+    if (!rpmCal.valid) display.println("MAP: UNCAL (KV est)");
+    else display.printf("MAP: cal %d pts\n", rpmCal.n);
     display.printf("Up  : %ds\n", prof.rampUpS);
     display.printf("Hold: %ds\n", prof.holdS);
     display.printf("Down: %ds\n", prof.rampDnS);
@@ -211,10 +302,10 @@ static void drawScreen() {
     unsigned long leftS = el < total ? (total - el + 999) / 1000 : 0;
     display.printf("%-8s %4lus left\n", PHASE_NAMES[profilePhase(el, prof)], leftS);
     display.printf("Set : %d rpm\n", prof.targetRpm);
-    display.printf("Cmd : %d rpm\n", cmdRpm);
     if (measRpm >= 0) display.printf("Tach: %d rpm\n", measRpm);
     else display.println("Tach: not fitted");
-    display.printf("ESC : %dus\n", cmdUs);
+    display.printf("Cmd : %d rpm\n", cmdRpm);
+    display.printf("ESC : %dus T:%+d\n", cmdUs, trimUs);
     if (safety.s.currentLimited) display.println("CUR LIM");
     display.println("D:STOP  *:E-STOP");
   }
@@ -323,14 +414,203 @@ static void menuEdit() {
   redrawNow = true;
 }
 
+// ---- Cal 1: ~60s dense us->rpm sweep (12 pts, chuck only, top ~6000rpm) ----
+static void calRpmSweep() {
+  appMode = APP_CAL_RPM;
+  display.clearDisplay(); display.setCursor(0, 0);
+  display.println("CAL RPM MAP");
+  display.println("Chuck only!");
+  display.println("Top ~6000rpm");
+  display.println("C:start D:abort");
+  display.display();
+  bool abort = false;
+  while (true) {
+    char k = menuKey(abort);
+    if (abort) { appMode = APP_MENU; return; }
+    if (k == KEY_BACK) { appMode = APP_MENU; redrawNow = true; return; }
+    if (k == KEY_OK || k == KEY_RUN) break;
+  }
+  int usStart = fbCal.hasMin ? fbCal.usMin + 10 : ESC_SPIN_US + 30;
+  int usEnd = rpmToUs(CAL_TOP_RPM);   // KV estimate for sweep top
+  if (usEnd > ESC_SAFE_US - 40) usEnd = ESC_SAFE_US - 40;
+  if (usEnd < usStart + 200) usEnd = usStart + 200;
+  RpmCal c;
+  c.n = 0;
+  Serial.println("cal_pt,esc_us,tach_rpm,stable");
+  for (uint8_t i = 0; i < CAL_POINTS; i++) {
+    int us = usStart + (int)((long)(usEnd - usStart) * i / (CAL_POINTS - 1));
+    esc.writeMicroseconds(us);
+    uint32_t t0 = millis();
+    // settle half, then sample
+    while (millis() - t0 < CAL_DWELL_MS / 2) {
+      if (estopPinActive()) safety.pressEstop();
+      if (safety.hasFault() || keys.getKey() == KEY_BACK) {
+        esc.writeMicroseconds(ESC_MIN_US); appMode = APP_MENU; redrawNow = true; return;
+      }
+      measRpm = readTachRpm();
+      display.clearDisplay(); display.setCursor(0, 0);
+      display.printf("Pt %d/%d settle\n", i + 1, CAL_POINTS);
+      display.printf("us %d\n", us);
+      display.printf("tach %d rpm\n", measRpm);
+      display.println("D:abort");
+      display.display();
+      delay(200);
+    }
+    int med = tachMedian(12, 200);
+    int s1 = readTachRpm(); delay(200);
+    int s2 = readTachRpm();
+    int lo = min(s1, min(s2, med)), hi = max(s1, max(s2, med));
+    bool stable = med > 0 && (hi - lo) <= max(50, med / 10);
+    measRpm = med;
+    Serial.printf("%d,%d,%d,%d\n", i, us, med, stable ? 1 : 0);
+    display.clearDisplay(); display.setCursor(0, 0);
+    display.printf("Pt %d/%d %s\n", i + 1, CAL_POINTS, stable ? "OK" : "SKIP");
+    display.printf("us %d\n", us);
+    display.printf("%d rpm\n", med);
+    display.display();
+    delay(400);
+    if (stable && c.n < CAL_POINTS) { c.us[c.n] = us; c.rpm[c.n] = med; c.n++; }
+    if (safety.hasFault()) { esc.writeMicroseconds(ESC_MIN_US); appMode = APP_MENU; return; }
+  }
+  esc.writeMicroseconds(ESC_MIN_US);
+  // validate: >=5 stable pts incl one <1000rpm
+  uint8_t low = 0;
+  for (uint8_t i = 0; i < c.n; i++) if (c.rpm[i] < CAL_LOW_RPM) low++;
+  if (c.n >= CAL_MIN_STABLE && low >= 1) {
+    c.valid = true;
+    rpmCal = c;
+    calibSaveTable(rpmCal);
+    display.clearDisplay(); display.setCursor(0, 0);
+    display.printf("SAVED %d pts\n", c.n);
+    display.println("C:done");
+    display.display();
+  } else {
+    display.clearDisplay(); display.setCursor(0, 0);
+    display.println("CAL FAILED");
+    display.printf("stable %d (need %d)\n", c.n, CAL_MIN_STABLE);
+    display.println("C:fallback D:menu");
+    display.display();
+    while (true) {
+      bool ab; char k = menuKey(ab);
+      if (ab || k == KEY_BACK) break;
+      if (k == KEY_OK || k == KEY_RUN) {
+        editNumber(fbCal.fbMinRpm, RPM_MIN, RPM_ABSOLUTE_MAX, 50, "Fallback min RPM");
+        editNumber(fbCal.fbMaxRpm, RPM_MIN, RPM_ABSOLUTE_MAX, 100, "Fallback max RPM");
+        fbCal.cap = fbCal.fbMaxRpm;
+        prof.maxRpmCap = fbCal.cap;
+        calibSaveFb(fbCal);
+        break;
+      }
+    }
+  }
+  appMode = APP_MENU; redrawNow = true;
+}
+
+// ---- Cal 2: feedback min-detect + limits (never spins high) ----
+static void calFeedback() {
+  appMode = APP_CAL_FB;
+  display.clearDisplay(); display.setCursor(0, 0);
+  display.println("CAL FEEDBACK");
+  display.println("Finds spin-start");
+  display.println("C:start D:abort");
+  display.display();
+  bool abort = false;
+  while (true) {
+    char k = menuKey(abort);
+    if (abort) { appMode = APP_MENU; return; }
+    if (k == KEY_BACK) { appMode = APP_MENU; redrawNow = true; return; }
+    if (k == KEY_OK || k == KEY_RUN) break;
+  }
+  int us = ESC_MIN_US;
+  int lockUs = 0, lockRpm = 0;
+  uint8_t agree = 0;
+  int lastMed = 0;
+  Serial.println("fb_us,tach_rpm");
+  while (us <= FB_MIN_MAX_US) {
+    esc.writeMicroseconds(us);
+    if (estopPinActive()) safety.pressEstop();
+    if (safety.hasFault() || keys.getKey() == KEY_BACK) {
+      esc.writeMicroseconds(ESC_MIN_US); appMode = APP_MENU; redrawNow = true; return;
+    }
+    measRpm = readTachRpm();
+    Serial.printf("%d,%d\n", us, measRpm);
+    display.clearDisplay(); display.setCursor(0, 0);
+    display.println("Seeking min...");
+    display.printf("us %d\n", us);
+    display.printf("tach %d rpm\n", measRpm);
+    display.println("D:abort");
+    display.display();
+    delay(FB_MIN_STEP_MS);
+    if (measRpm > 0) {
+      int med = tachMedian(5, 200);
+      if (lastMed > 0 && abs(med - lastMed) * 100 <= lastMed * 15 + 200) agree++;
+      else agree = 1;
+      lastMed = med;
+      if (agree >= 3) {
+        // 1 s sustain hold
+        delay(1000);
+        int confirm = tachMedian(5, 200);
+        if (confirm > 0 && abs(confirm - med) * 100 <= med * 20 + 200) {
+          lockUs = us; lockRpm = (med + confirm) / 2;
+          break;
+        }
+        agree = 0;
+      }
+    } else { agree = 0; lastMed = 0; }
+    us += FB_MIN_STEP_US;
+  }
+  esc.writeMicroseconds(ESC_MIN_US);
+  if (lockUs > 0) {
+    fbCal.hasMin = true;
+    fbCal.usMin = lockUs;
+    fbCal.rpmMin = lockRpm;
+    fbCal.fbMinRpm = lockRpm;
+    calibSaveFb(fbCal);
+    display.clearDisplay(); display.setCursor(0, 0);
+    display.println("MIN LOCKED");
+    display.printf("us %d\n", lockUs);
+    display.printf("%d rpm\n", lockRpm);
+    display.println("C:cont");
+    display.display();
+    bool done = false;
+    while (!done) {
+      bool ab; char k = menuKey(ab);
+      if (ab || k == KEY_BACK) break;
+      if (k == KEY_OK || k == KEY_RUN) done = true;
+    }
+  } else {
+    display.clearDisplay(); display.setCursor(0, 0);
+    display.println("NO LOCK");
+    display.println("Type fallback:");
+    display.display();
+    delay(600);
+    editNumber(fbCal.fbMinRpm, RPM_MIN, RPM_ABSOLUTE_MAX, 50, "Fallback min RPM");
+    fbCal.hasMin = false;
+    fbCal.rpmMin = fbCal.fbMinRpm;
+    calibSaveFb(fbCal);
+  }
+  // cap edit (default 8000, never auto-tests high)
+  int cap = fbCal.cap;
+  if (editNumber(cap, RPM_MIN, RPM_ABSOLUTE_MAX, 100, "Max cap RPM")) {
+    fbCal.cap = cap;
+    fbCal.fbMaxRpm = cap;
+    prof.maxRpmCap = cap;
+    calibSaveFb(fbCal);
+    saveProfile();
+  }
+  appMode = APP_MENU; redrawNow = true;
+}
+
 // ---- Setup ----
 void setup() {
   Serial.begin(115200);
   setupDisplay();
+  splashV1();
   display.println("Arming ESC..."); display.display();
   setupESC();                       // blocks ESC_ARM_TIME_MS at ESC_ARM_US
   setupTacho();
   setupEstop();
+  calibLoad(rpmCal, fbCal);
   loadProfile();
   keys.addEventListener([](char e){ if (e == KEY_ESTOP) safety.pressEstop(); });
   redrawNow = true;
@@ -344,37 +624,55 @@ void loop() {
   char k = keys.getKey();           // '*' also latches E-stop via the event listener
   if (k != NO_KEY) {
     redrawNow = true;
-    switch (k) {
-      case KEY_ESTOP: safety.pressEstop(); stopSpin(); break;
-      case KEY_BACK:
-        if (spinActive) stopSpin();
-        else if (safety.hasFault()) tryClearFault();
-        else menuEdit();
-        break;
-      case KEY_RUN:
-        if (!spinActive && !safety.hasFault()) startSpin();
-        break;
-      default: break;
+    if (k == KEY_ESTOP) { safety.pressEstop(); stopSpin(); appMode = APP_MENU; }
+    else if (appMode == APP_MENU && !spinActive) {
+      if (k == KEY_UP || k == '2') menuIdx = (menuIdx + 2) % 3;
+      else if (k == KEY_DOWN || k == '8') menuIdx = (menuIdx + 1) % 3;
+      else if (k >= '1' && k <= '3') menuIdx = k - '1';
+      else if (k == KEY_OK || k == KEY_RUN) {
+        if (menuIdx == 0) calRpmSweep();
+        else if (menuIdx == 1) calFeedback();
+        else { appMode = APP_RUN_SETUP; menuEdit(); appMode = spinActive ? APP_RUNNING : APP_MENU; }
+      } else if (k == KEY_BACK && safety.hasFault()) tryClearFault();
+    }
+    else if (appMode == APP_RUN_SETUP) { /* menuEdit owns keys */ }
+    else {
+      switch (k) {
+        case KEY_ESTOP: safety.pressEstop(); stopSpin(); appMode = APP_MENU; break;
+        case KEY_BACK:
+          if (spinActive) { stopSpin(); appMode = APP_MENU; }
+          else if (safety.hasFault()) tryClearFault();
+          else if (appMode == APP_RUNNING) appMode = APP_MENU;
+          else menuEdit();
+          break;
+        case KEY_RUN:
+          if (!spinActive && !safety.hasFault()) startSpin();
+          break;
+        default: break;
+      }
     }
   }
 
   if (safety.hasFault()) {
     stopSpin();
+    if (appMode == APP_RUNNING) appMode = APP_MENU;
   } else if (spinActive) {
     uint32_t now = millis();
     uint32_t elapsed = now - spinStartMs;
     if (elapsed >= profileTotalMs(prof)) {
       stopSpin();
+      appMode = APP_MENU;
       redrawNow = true;
     } else {
       // THE interlock: cap / current-derate / tach trips apply to the OUTPUT.
       int safeRpm = safety.update(rampRpm(elapsed, prof), measRpm, now, prof.maxRpmCap);
       if (safety.hasFault()) {
         stopSpin();
+        appMode = APP_MENU;
         redrawNow = true;
       } else {
         cmdRpm = safeRpm;
-        cmdUs = constrain(rpmToUs(safeRpm), ESC_MIN_US, ESC_SAFE_US);
+        cmdUs = closedLoopUs(safeRpm, measRpm, now);   // table feedforward + trim
         esc.writeMicroseconds(cmdUs);
         logTelemetry(now, elapsed);
       }
