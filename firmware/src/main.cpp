@@ -702,7 +702,7 @@ static void escSetup() {
       display.println("ESC SETUP no chuck!");
       display.println("A:HI B:LO D:exit");
       display.printf("OUT:%dus\n", out);
-      display.println("HI@power=learn");
+      display.println("C:prep C2 learn");
       display.display();
       redraw = false;
     }
@@ -716,6 +716,49 @@ static void escSetup() {
     if (k == KEY_BACK) break;
     if (k == KEY_UP) { out = ESC_MAX_US; esc.writeMicroseconds(out); Serial.println("esc-setup: HIGH 2000us"); }
     else if (k == KEY_DOWN) { out = ESC_MIN_US; esc.writeMicroseconds(out); Serial.println("esc-setup: LOW 1000us"); }
+    else if (k == KEY_OK) {   // prep C2 learn: next SMPS cycle boots straight into HIGH
+      if (prefs.begin("esclrn", false)) { prefs.putBool("c2", true); prefs.end(); }
+      display.clearDisplay(); display.setCursor(0, 0);
+      display.println("C2 ARMED");
+      display.println("cycle SMPS now!");
+      display.display();
+      Serial.println("esc-setup: C2 armed, cycle SMPS");
+      delay(3000);
+      break;
+    }
+    redraw = true;
+  }
+  esc.writeMicroseconds(ESC_MIN_US);
+  appMode = APP_MENU; redrawNow = true;
+}
+
+// ---- C2 LEARN boot: armed via ESC SETUP, SMPS cycled, boots straight into
+// HIGH with no splash and no 3 s arm (a normal boot is too slow for the 2 s
+// window). Wait for 2 beeps, press B for LOW, D exits to the menu.
+static void learnMode() {
+  appMode = APP_ESC;
+  int out = ESC_MAX_US;
+  bool redraw = true;
+  while (true) {
+    if (redraw) {
+      display.clearDisplay(); display.setCursor(0, 0);
+      display.println("C2 LEARN");
+      display.printf("OUT:%dus\n", out);
+      display.println("2 beeps -> B");
+      display.println("D:exit");
+      display.display();
+      redraw = false;
+    }
+    if (estopPinActive()) safety.pressEstop();
+    if (safety.hasFault()) {
+      esc.writeMicroseconds(ESC_MIN_US);
+      appMode = APP_MENU; redrawNow = true; return;
+    }
+    char k = keys.getKey();
+    if (k == NO_KEY) { delay(10); continue; }
+    if (k == KEY_BACK) break;
+    if (k == KEY_UP) { out = ESC_MAX_US; esc.writeMicroseconds(out); Serial.println("learn: HIGH"); }
+    else if (k == KEY_DOWN) { out = ESC_MIN_US; esc.writeMicroseconds(out); Serial.println("learn: LOW 1000us"); }
     redraw = true;
   }
   esc.writeMicroseconds(ESC_MIN_US);
@@ -918,6 +961,26 @@ static void calFeedback() {
 void setup() {
   Serial.begin(115200);
   setupDisplay();
+  // C2-learn boot (armed from ESC SETUP): skip splash + 3 s arm, HIGH at once.
+  bool learnBoot = false;
+  if (prefs.begin("esclrn", true)) { learnBoot = prefs.getBool("c2", false); prefs.end(); }
+  if (learnBoot) {
+    if (prefs.begin("esclrn", false)) { prefs.putBool("c2", false); prefs.end(); }
+    esc.setPeriodHertz(ESC_PWM_HZ);
+    esc.attach(ESC_PIN, ESC_MIN_US, ESC_MAX_US);
+    esc.setTimerWidth(ESC_TIMER_BITS);
+    esc.writeMicroseconds(ESC_MAX_US);
+    setupTacho();
+    setupEstop();
+    calibLoad(rpmCal, fbCal);
+    loadProfile();
+    Serial.printf("SpinCoater %s C2-LEARN boot\n", FW_VERSION);
+    keys.addEventListener([](char e){ if (e == KEY_ESTOP) safety.pressEstop(); });
+    learnMode();   // blocks until D/E-stop, then falls through to menu
+    appMode = APP_MENU;
+    redrawNow = true;
+    return;
+  }
   splashV1();
   setupESC();                       // blocks ESC_ARM_TIME_MS at ESC_ARM_US (no splash text)
   setupTacho();
