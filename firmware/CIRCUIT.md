@@ -35,7 +35,7 @@ High current world with thick wires, and logic world on breadboard with thin wir
 
 12. Tachometer (reflective IR module, 3-pin VCC/GND/OUT). VCC to ESP32 3V3 (**not 5V**), GND to GND rail, OUT to GPIO23. Falling edge, 1 pulse/rev (white stripe on matte-black chuck, 5–15 mm gap, tune onboard pot). GPIO23 has an internal pull-up enabled in firmware — no external 10k needed (module drives push-pull).
 
-13. Optional E-stop button. Normally open push button, one leg to GPIO35, other leg to GND, plus a REQUIRED 10k resistor from GPIO35 to 3V3 (GPIO35 has no internal pull-up; without it the pin floats LOW and the board boots straight into E-STOP). Pin reads LOW when pressed and firmware latches a fault + cuts to 1000us (motor coasts). Mount it where your hand can slap it. If no button is fitted, set USE_ESTOP_PIN 0 in firmware/include/config.h or the device boots faulted. This matches R2/SW1 on the schematic.
+13. E-stop button: NOT FITTED — `USE_ESTOP_PIN 0` in firmware (GPIO35 left unconnected; `*` key still triggers software E-stop). If you add a button later: normally-open push button, one leg to GPIO35, other to GND, plus 10k from GPIO35 to 3V3, then set `USE_ESTOP_PIN 1`.
 
 14. Buzzer: not fitted — skipped.
 

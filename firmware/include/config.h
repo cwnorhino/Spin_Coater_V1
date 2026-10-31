@@ -25,7 +25,7 @@ static const uint8_t KEY_COL_PINS[KEY_COLS] = {33, 32, 18, 19};
 // Optional inputs. GPIO34-39 are input-only and have NO internal pull-up or
 // pull-down, so each of these needs an external pull-up (10k to 3V3).
 // A floating GPIO34/35 reads LOW/noisy: spurious E-stops and tach counts.
-#define USE_ESTOP_PIN  1    // 1 = hardware E-stop wired on ESTOP_PIN
+#define USE_ESTOP_PIN  0    // 1 = hardware E-stop wired on ESTOP_PIN (0 = no button fitted)
 #define USE_TACHO      1    // 1 = reflective IR tachometer on TACH_PIN (closed-loop)
 
 #define TACH_PIN       23   // reflective IR OUT here, falling edge per pulse (has pull-up + interrupt)
@@ -92,6 +92,15 @@ static inline float rpmAtFullThrottle() { return MOTOR_KV * SUPPLY_V * MOTOR_EFF
 #define DEF_RAMP_DN_S  10
 // Ease: 0=Linear 1=EaseIn 2=EaseOut 3=S-Curve
 #define DEF_EASE 3
+
+// Firmware version (shown on every screen + Serial boot; OTA compares this)
+#define FW_VERSION "1.2.0"
+
+// Self-update: menu 5 UPDATE joins this hotspot and pulls firmware.bin
+// from the latest GitHub release, then flashes itself.
+#define OTA_SSID "Terminal 2"
+#define OTA_PASS "mfvr7566"
+#define OTA_FW_URL "https://github.com/cwnorhino/Spin_Coater_V1/releases/latest/download/firmware.bin"
 
 // UI keys (membrane 4x4: 0-9, A-D, *, #)
 #define KEY_UP    'A'
